@@ -1,7 +1,8 @@
-import {Guild, GuildChannelResolvable, GuildMember, StageChannel, VoiceChannel} from "discord.js";
-import {StreamConnection} from "../voice/StreamConnection";
-import {AudioResource, entersState, joinVoiceChannel, StreamType, VoiceConnectionStatus} from "@discordjs/voice";
+import { Guild, GuildChannelResolvable, GuildMember, StageChannel, VoiceChannel } from "discord.js";
+import { StreamConnection } from "../voice/StreamConnection";
+import { AudioResource, entersState, joinVoiceChannel, StreamType, VoiceConnectionStatus, DiscordGatewayAdapterCreator } from "@discordjs/voice";
 import ytdl from "discord-ytdl-core";
+import scdl from 'soundcloud-downloader';
 import {
     DefaultPlayerOptions,
     DefaultPlaylistOptions,
@@ -102,7 +103,7 @@ export class Queue<T = unknown> {
 
         this.guild = guild;
 
-        this.options = {...DefaultPlayerOptions, ...options};
+        this.options = { ...DefaultPlayerOptions, ...options };
     }
 
     /**
@@ -157,7 +158,7 @@ export class Queue<T = unknown> {
         let connection = joinVoiceChannel({
             guildId: channel.guild.id,
             channelId: channel.id,
-            adapterCreator: channel.guild.voiceAdapterCreator,
+            adapterCreator: channel.guild.voiceAdapterCreator as unknown as DiscordGatewayAdapterCreator,
             selfDeaf: this.options.deafenOnJoin
         });
         let _connection: StreamConnection;
@@ -207,16 +208,16 @@ export class Queue<T = unknown> {
                         this.songs.unshift(oldSong!);
                         this.songs[0]._setFirst(false);
                         this.player.emit('songChanged', this, this.songs[0], oldSong);
-                        return this.play(this.songs[0] as Song, {immediate: true});
+                        return this.play(this.songs[0] as Song, { immediate: true });
                     } else if (this.repeatMode === RepeatMode.QUEUE) {
                         this.songs.push(oldSong!);
                         this.songs[this.songs.length - 1]._setFirst(false);
                         this.player.emit('songChanged', this, this.songs[0], oldSong);
-                        return this.play(this.songs[0] as Song, {immediate: true});
+                        return this.play(this.songs[0] as Song, { immediate: true });
                     }
 
                     this.player.emit('songChanged', this, this.songs[0], oldSong);
-                    return this.play(this.songs[0] as Song, {immediate: true});
+                    return this.play(this.songs[0] as Song, { immediate: true });
                 }
             })
             .on('error', (err) => this.player.emit('error', err.message, this));
@@ -230,6 +231,7 @@ export class Queue<T = unknown> {
      * @returns {Promise<Song>}
      */
     async play(search: Song | string, options: PlayOptions & { immediate?: boolean, seek?: number, data?: T } = DefaultPlayOptions): Promise<Song> {
+
         if (this.destroyed)
             throw new DMPError(DMPErrors.QUEUE_DESTROYED);
         if (!this.connection)
@@ -239,7 +241,7 @@ export class Queue<T = unknown> {
             DefaultPlayOptions,
             options
         );
-        let {data} = options;
+        let { data } = options;
         delete options.data;
         let song = await Utils.best(search, options, this)
             .catch(error => {
@@ -271,21 +273,34 @@ export class Queue<T = unknown> {
         if (song.seekTime)
             options.seek = song.seekTime;
 
-        let stream = ytdl(song.url, {
-            requestOptions: this.player.options.ytdlRequestOptions ?? {},
-            opusEncoded: false,
-            seek: options.seek ? options.seek / 1000 : 0,
-            fmt: 's16le',
-            encoderArgs: [],
-            quality: quality!.toLowerCase() === 'low' ? 'lowestaudio' : 'highestaudio',
-            highWaterMark: 1 << 25,
-            filter: 'audioonly'
-        })
-            .on('error', (error: { message: string; }) => {
+        let stream = null;
+        if (String(song.url).includes("soundcloud.com")) {
+            try {
+                stream = scdl.download(song.url)
+            } catch (error) {
                 if (!/Status code|premature close/i.test(error.message))
                     this.player.emit('error', error.message === 'Video unavailable' ? 'VideoUnavailable' : error.message, this);
                 return;
-            });
+            }
+
+        } else {
+
+            stream = ytdl(song.url, {
+                requestOptions: this.player.options.ytdlRequestOptions ?? {},
+                opusEncoded: false,
+                seek: options.seek ? options.seek / 1000 : 0,
+                fmt: 's16le',
+                encoderArgs: [],
+                quality: quality!.toLowerCase() === 'low' ? 'lowestaudio' : 'highestaudio',
+                highWaterMark: 1 << 25,
+                filter: 'audioonly'
+            })
+                .on('error', (error: { message: string; }) => {
+                    if (!/Status code|premature close/i.test(error.message))
+                        this.player.emit('error', error.message === 'Video unavailable' ? 'VideoUnavailable' : error.message, this);
+                    return;
+                });
+        }
 
         const resource: AudioResource<Song> = this.connection.createAudioStream(stream, {
             metadata: song,
@@ -330,7 +345,7 @@ export class Queue<T = unknown> {
 
         if (songLength === 0) {
             playlist.songs[0]._setFirst();
-            await this.play(playlist.songs[0], {immediate: true});
+            await this.play(playlist.songs[0], { immediate: true });
         }
 
         return playlist;
@@ -377,6 +392,41 @@ export class Queue<T = unknown> {
         const skippedSong = this.songs[0];
         this.connection.stop();
         return skippedSong;
+    }
+
+    /**
+     * Moves a Song to a new position.
+     * The indices can't be the same or start with 0, because 0 is the current playing Song
+     * @param {number} oldIndex - The old index of the Song
+     * @param {number} [newIndex] - The new index of the Song, if not provided, the Song will be moved to the beginning
+     * @returns {boolean}
+     */
+    move(oldIndex: number, newIndex?: number): boolean {
+        if (this.destroyed)
+            throw new DMPError(DMPErrors.QUEUE_DESTROYED);
+
+        if (!this.connection)
+            throw new DMPError(DMPErrors.NO_VOICE_CONNECTION);
+
+        if (newIndex === undefined)
+            newIndex = 1;
+
+        if (oldIndex === undefined || oldIndex < 1 || oldIndex >= this.songs.length)
+            throw new DMPError(DMPErrors.INVALID_INDEX);
+
+        if (newIndex < 1 || newIndex >= this.songs.length)
+            throw new DMPError(DMPErrors.INVALID_INDEX);
+
+        if (oldIndex === newIndex)
+            throw new DMPError(DMPErrors.INVALID_INDEX);
+
+        const song = this.songs[oldIndex];
+        this.songs.splice(oldIndex, 1);
+        this.songs.splice(newIndex, 0, song);
+
+        this.player.emit('songMoved', this, song, oldIndex, newIndex);
+
+        return true;
     }
 
     /**
