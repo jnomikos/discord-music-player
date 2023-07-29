@@ -34,6 +34,7 @@
   "dependencies": {
     "@discordjs/opus": "^0.8.0",
     "@discordjs/voice": "^0.15.0",
+    "@distube/ytdl-core": "^4.11.17",
     "apple-music-metadata": "^1.0.10",
     "axios": "^0.22.0",
     "axios-retry": "^3.2.0",
@@ -46,7 +47,6 @@
     "soundcloud-downloader": "^1.0.0",
     "spotify-url-info": "^3.1.7",
     "youtubei": "^0.0.1-rc.34",
-    "ytdl-core": "^4.9.1",
     "ytsr": "^3.6.0"
   },
   "devDependencies": {
